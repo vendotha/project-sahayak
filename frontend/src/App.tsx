@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+// Corrected line
+import { useState, useRef, useEffect } from 'react';
 import { Box, Card, CardContent, CardHeader, Button, CircularProgress, Paper } from '@mui/material';
 
 // Define the structure for a single message
