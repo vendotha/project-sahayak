@@ -1,96 +1,149 @@
-// Corrected line
-import { useState, useRef, useEffect } from 'react';
-import { Box, Card, CardContent, CardHeader, Button, CircularProgress, Paper } from '@mui/material';
+import { useState, useRef, useEffect } from 'react'; // <-- CORRECTED LINE
+import { Box, Card, CardContent, CardHeader, TextField, IconButton, CircularProgress, Paper, Button, ButtonGroup, Typography } from '@mui/material';
+import SendIcon from '@mui/icons-material/Send';
+import UploadFileIcon from '@mui/icons-material/UploadFile';
+import mammoth from 'mammoth/mammoth.browser';
+import { defaultFaqData } from './data';
+import type { FaqItem } from './data';
 
-// Define the structure for a single message
+// --- Data Structures ---
 interface Message {
   text: string;
   isUser: boolean;
 }
 
-// Our local, frontend-only knowledge base
-const faqData = [
-  {
-    keywords: ['fee', 'fees', 'payment', 'deadline'],
-    answer: 'The deadline for fee payment is October 25th, 2025. You can pay through the student portal.'
-  },
-  {
-    keywords: ['timetable', 'schedule', 'classes'],
-    answer: 'The updated timetable for the 3rd year CSE is available in the Academics section of the college website.'
-  },
-  {
-    keywords: ['scholarship', 'financial aid'],
-    answer: 'Scholarship forms are available at the administration office. The last day to submit is November 10th, 2025.'
-  },
-  {
-    keywords: ['hi', 'hello', 'hey'],
-    answer: 'Hello! How can I help you today? You can ask me about fees, timetables, or scholarships.'
-  }
-];
-
-// Define the options that will be shown as buttons to the user
-const chatOptions = [
-    {
-        label: 'Fees & Deadlines',
-        keywords: ['fee', 'fees'],
-    },
-    {
-        label: 'Timetable & Classes',
-        keywords: ['timetable', 'schedule'],
-    },
-    {
-        label: 'Scholarships',
-        keywords: ['scholarship', 'financial aid'],
-    }
-];
-
-const fallbackAnswer = "Sorry, I can only answer questions about fees, timetables, and scholarships.";
-
 function App() {
-  const [messages, setMessages] = useState<Message[]>([{ text: 'Hello! Please select a topic below.', isUser: false }]);
+  const [language, setLanguage] = useState<'en' | 'hi' | 'te'>('en');
+  const [messages, setMessages] = useState<Message[]>([{ text: 'Hello! How can I help?', isUser: false }]);
+  const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showOptions, setShowOptions] = useState(true);
+  // Use the imported data as the initial state
+  const [faqData, setFaqData] = useState<FaqItem[]>(defaultFaqData); 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // On component load, check localStorage for any previously uploaded data
+  useEffect(() => {
+    try {
+      const savedData = localStorage.getItem('faqData');
+      if (savedData) {
+        setFaqData(JSON.parse(savedData));
+      }
+    } catch (error)      {
+      console.error("Failed to load data from localStorage", error);
+      setFaqData(defaultFaqData);
+    }
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // This function is triggered when a user clicks an option button
-  const handleOptionClick = (optionLabel: string) => {
-    if (isLoading) return;
-
-    const userMessage = { text: optionLabel, isUser: true };
+  // --- Core Chat Logic ---
+  const handleSend = () => {
+    if (input.trim() === '' || isLoading) return;
+    const userMessage = { text: input, isUser: true };
     setMessages((prev) => [...prev, userMessage]);
-    
     setIsLoading(true);
-    setShowOptions(false); // Hide options while the bot "thinks"
 
-    // Simulate the bot "thinking" for a moment
     setTimeout(() => {
-      let botResponse = fallbackAnswer;
-      const selectedOption = chatOptions.find(opt => opt.label === optionLabel);
-
-      // Find the corresponding answer from our main knowledge base
-      if (selectedOption) {
-        for (const item of faqData) {
-          if (item.keywords.some(keyword => selectedOption.keywords.includes(keyword))) {
-            botResponse = item.answer;
-            break;
-          }
+      const lowerCaseInput = input.toLowerCase();
+      let botResponse: string | null = null;
+      const fallbackAnswer = {
+        en: "Sorry, I couldn't find an answer for that.",
+        hi: "क्षमा करें, मुझे उसका उत्तर नहीं मिला।",
+        te: "క్షమించండి, దానికి సమాధానం దొరకలేదు."
+      };
+      for (const item of faqData) {
+        if (item.keywords.some(keyword => lowerCaseInput.includes(keyword))) {
+          botResponse = item.answers[language] || item.answers.en; // Fallback to English
+          break;
         }
       }
-
-      setMessages((prev) => [...prev, { text: botResponse, isUser: false }]);
+      setMessages((prev) => [...prev, { text: botResponse || fallbackAnswer[language], isUser: false }]);
       setIsLoading(false);
-      setShowOptions(true); // Show the options again for the next question
-    }, 1000); // 1-second delay
+    }, 1000);
+    setInput('');
+  };
+
+  // --- New File Upload and Parsing Logic ---
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const arrayBuffer = e.target?.result;
+      if (arrayBuffer) {
+        try {
+          const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer as ArrayBuffer });
+          const text = result.value;
+          const parsedData = parseDocxContent(text);
+          if (parsedData.length === 0) {
+            alert('Could not find any valid Q&A entries in the document. Please check the format.');
+            return;
+          }
+          setFaqData(parsedData);
+          localStorage.setItem('faqData', JSON.stringify(parsedData)); 
+          alert('Knowledge base updated successfully!');
+        } catch (error) {
+          console.error("Error parsing DOCX file:", error);
+          alert('Failed to read the Word document. Please check the format.');
+        }
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  
+  const parseDocxContent = (text: string): FaqItem[] => {
+    const entries = text.split('---');
+    const newFaqData: FaqItem[] = [];
+    entries.forEach((entry, index) => {
+      if (entry.trim() === '') return;
+      const lines = entry.trim().split('\n');
+      const faqItem: any = { id: `custom-${index}`, keywords: [], answers: {} };
+      lines.forEach(line => {
+        const [key, ...valueParts] = line.split(':');
+        const value = valueParts.join(':').trim();
+        if (key && value) {
+          if (key.trim().toLowerCase() === 'keywords') {
+            faqItem.keywords = value.split(',').map(k => k.trim().toLowerCase());
+          } else if (['en', 'hi', 'te'].includes(key.trim().toLowerCase())) {
+            faqItem.answers[key.trim().toLowerCase()] = value;
+          }
+        }
+      });
+      if (faqItem.keywords.length > 0 && Object.keys(faqItem.answers).length > 0) {
+        newFaqData.push(faqItem);
+      }
+    });
+    return newFaqData;
+  };
+
+  const triggerFileUpload = () => {
+    fileInputRef.current?.click();
   };
 
   return (
     <Box sx={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'background.default' }}>
       <Card sx={{ width: '100%', maxWidth: 800, height: '85vh', display: 'flex', flexDirection: 'column', boxShadow: 6 }}>
-        <CardHeader title="Campus FAQ Bot" sx={{ textAlign: 'center', borderBottom: 1, borderColor: 'divider' }} />
+        <CardHeader 
+            title="Campus FAQ Bot" 
+            sx={{ textAlign: 'center', borderBottom: 1, borderColor: 'divider' }}
+            action={
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, position: 'absolute', right: 16, top: 12 }}>
+                <IconButton onClick={triggerFileUpload} title="Upload new Q&A">
+                  <UploadFileIcon />
+                </IconButton>
+                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".docx" style={{ display: 'none' }} />
+                <ButtonGroup variant="outlined" size="small">
+                  <Button onClick={() => setLanguage('en')} variant={language === 'en' ? 'contained' : 'outlined'}>EN</Button>
+                  <Button onClick={() => setLanguage('hi')} variant={language === 'hi' ? 'contained' : 'outlined'}>HI</Button>
+                  <Button onClick={() => setLanguage('te')} variant={language === 'te' ? 'contained' : 'outlined'}>TE</Button>
+                </ButtonGroup>
+              </Box>
+            }
+        />
         <CardContent sx={{ flexGrow: 1, overflowY: 'auto', p: 2 }}>
           {messages.map((msg, index) => (
             <Box key={index} sx={{ display: 'flex', justifyContent: msg.isUser ? 'flex-end' : 'flex-start', mb: 2 }}>
@@ -101,7 +154,7 @@ function App() {
                 maxWidth: '70%',
                 borderRadius: msg.isUser ? '20px 20px 5px 20px' : '20px 20px 20px 5px',
               }}>
-                {msg.text}
+                <Typography>{msg.text}</Typography>
               </Paper>
             </Box>
           ))}
@@ -114,24 +167,19 @@ function App() {
           )}
           <div ref={scrollRef} />
         </CardContent>
-        <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-            {showOptions && !isLoading ? (
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'center' }}>
-                    {chatOptions.map((option) => (
-                        <Button
-                            key={option.label}
-                            variant="outlined"
-                            onClick={() => handleOptionClick(option.label)}
-                        >
-                            {option.label}
-                        </Button>
-                    ))}
-                </Box>
-            ) : (
-                <Box sx={{ display: 'flex', justifyContent: 'center', height: '36.5px' }}>
-                    {/* This empty box prevents the layout from shifting when buttons are hidden */}
-                </Box>
-            )}
+        <Box sx={{ p: 2, display: 'flex', alignItems: 'center', borderTop: 1, borderColor: 'divider' }}>
+          <TextField
+            fullWidth
+            variant="outlined"
+            placeholder="Type your question..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            disabled={isLoading}
+          />
+          <IconButton color="primary" onClick={handleSend} disabled={isLoading} sx={{ ml: 1 }}>
+            <SendIcon />
+          </IconButton>
         </Box>
       </Card>
     </Box>
